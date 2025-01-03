@@ -1,4 +1,4 @@
-from pickle import BUILD
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -239,6 +239,7 @@ def burn_rate_comparison():
         # limit = catmodels.at[index,'Limit_mean']
         # for each state set coverage to the NFIP coverage for residential (1-4 units) in FEMA 100-year flood zone
         limit = nfip_coverage.at[index,'SFHA_Coverage']
+        catmodels.at[index,'SFHA_Coverage'] = limit
         # for each state calculate catastrophe model burn rate: add mean storm surge and inland AAL then divide by $1,000 of coverage
         catmodels.at[index,'AAL_per_1000_limit'] = (catmodels.at[index,'StormSurge_AAL_mean'] + catmodels.at[index,'Inland_AAL_mean']) / (limit / 1000)
 
@@ -274,7 +275,6 @@ def burn_rate_comparison():
     # set NSI index as the state name
     nsi_data.set_index('Unnamed: 0', inplace=True)
 
-    aal_fs_cat = [] # initialize empty list to hold burn rate results
     fs_aal_total = 0 # initialize total First Street AAL
     fs_coverage_total = 0 # initialize total First Street coverage
     # loop through First Street data by state
@@ -289,20 +289,25 @@ def burn_rate_comparison():
         # add state AAL to CONUS total AAL
         fs_aal_total = fs_aal_total + row['Inside SFHA AAL']
 
+        catmodels.fillna(0, inplace=True)
         # extract cat model mean burn rate
-        aal_cat = catmodels.at[row['State'],'AAL_per_1000_limit']
-        # append First Street and cat model mean burn rate to output list
-        aal_fs_cat.append([row['State'],aal_fs,aal_cat])
+        kat_burn = (catmodels.at[row['State'],'Katrisk_Storm Surge_AAL'] + catmodels.at[row['State'],'Katrisk_Inland_AAL']) / (catmodels.at[row['State'],'SFHA_Coverage'] / 1000)
+        verisk_burn = (catmodels.at[row['State'],'AIR_Storm Surge_AAL'] + catmodels.at[row['State'],'AIR_Inland_AAL']) / (catmodels.at[row['State'],'SFHA_Coverage'] / 1000)
 
-        print(row['State'],aal_fs,aal_cat)
+        # aal_cat = catmodels.at[row['State'],'AAL_per_1000_limit']
+
+        # append First Street and cat model mean burn rate to output list
+        # aal_fs_cat.append([row['State'],aal_fs,aal_cat])
+
+        # print(row['State'],aal_fs,aal_cat)
         # plot burn rates in stem plot and assign color depending on which burn rate is greater
-        if aal_fs > aal_cat:
-            ax.stem(row['State'], aal_fs-aal_cat, linefmt='#FF5700', markerfmt='#FF5700', basefmt=' ', label='First Street > Cat Models')
-        else:
-            ax.stem(row['State'], aal_fs-aal_cat, linefmt='#233E99', markerfmt='#233E99', basefmt=' ', label='First Street < Cat Models')
+        ax.vlines(row['State'], 0, np.max([aal_fs, kat_burn, verisk_burn]), linestyles='dashed', color='black', linewidths=0.5) #
+        ax.scatter(row['State'], aal_fs, label='First Street', color='#fa7921')
+        ax.scatter(row['State'], kat_burn, color='#0c4767', label='KatRisk')
+        ax.scatter(row['State'], verisk_burn, color='#b9a44c', label='Verisk')
 
     # convert list of burn rates into dataframe
-    aal_fs_cat_pd = pd.DataFrame(aal_fs_cat,columns=['State','FSF_burn_rate','CatModel_mean_burn_rate'])
+    # aal_fs_cat_pd = pd.DataFrame(aal_fs_cat,columns=['State','FSF_burn_rate','CatModel_mean_burn_rate'])
     # aal_fs_cat_pd.to_csv('FSF_CatModel_BurnRate.csv',index=False)
 
     plt.tick_params(left = False)
@@ -310,11 +315,11 @@ def burn_rate_comparison():
     plt.grid(visible=True,axis='y')
     plt.yticks(fontproperties=my_font, fontsize=13)
     plt.xticks(fontproperties=my_font, fontsize=10)
-    plt.text(-2.5, 50, s="Burn Rate Comparison: First Street Foundation vs Catastrophe Models", fontproperties=my_font, fontsize=16)
+    plt.text(-2.5, 50, s="Catastrophe Models Burn Rate Comparison", fontproperties=my_font, fontsize=16)
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     plt.legend(by_label.values(), by_label.keys())
-    plt.ylabel("Burn rate First Street - Cat Models ($)" ,fontproperties=my_font, fontsize=13)
+    plt.ylabel("Burn rate ($)" ,fontproperties=my_font, fontsize=13)
 
     # plt.show()
 
@@ -326,129 +331,11 @@ def burn_rate_comparison():
 
     return
 
-## function to compare burn rates between First Street and reinsurance catastrophe models
-def aal_perproperty_comparison():
-    first_street = pd.read_csv('./FirstStreet_check/FirstStreet_AAL.csv') # load First Street AAL and locations data
-    nfip_coverage = pd.read_csv('NFIP_state_residential.csv') # load NFIP residential (1-4 units) coverage and locations data
-    nsi_data = pd.read_csv('./NSI_data/NSI_residential_1-4units.csv') # load NSI data
-    # load catastrophe models AAL data
-    catmodels = pd.read_csv('./fema_nfip-reinsurance-placement-information_2023/FEMA_reinsurance_2023_AAL.csv',index_col='State')
-    # apply scale AAL and Limit values
-    catmodels['Katrisk_Storm Surge_AAL'] = catmodels['Katrisk_Storm Surge_AAL'] * 1000
-    catmodels['Katrisk_Inland_AAL'] = catmodels['Katrisk_Inland_AAL'] * 1000
-    catmodels['Katrisk_Limit'] = catmodels['Katrisk_Limit'] * 1000
-    catmodels['AIR_Storm Surge_AAL'] = catmodels['AIR_Storm Surge_AAL'] * 1000
-    catmodels['AIR_Inland_AAL'] = catmodels['AIR_Inland_AAL'] * 1000
-    catmodels['AIR_Limit'] = catmodels['AIR_Limit'] * 1000
-    catmodels['RMS_Storm_Surge_AAL'] = catmodels['RMS_Storm_Surge_AAL'] * 1000
-    catmodels['RMS_Limit'] = catmodels['RMS_Limit'] * 1000
 
-    # calculate mean of storm surge AAL across catastrophe models for each state
-    catmodels['StormSurge_AAL_mean'] = catmodels[['Katrisk_Storm Surge_AAL', 'AIR_Storm Surge_AAL', 'RMS_Storm_Surge_AAL']].mean(axis='columns')
-    # calculate mean of inland AAL across catastrophe models
-    catmodels['Inland_AAL_mean'] = catmodels[['AIR_Inland_AAL', 'Katrisk_Inland_AAL']].mean(axis='columns',skipna=True)
-    # calculate mean of locations across catastrophe models
-    catmodels['Locations_mean'] = catmodels[['AIR_Locations', 'Katrisk_Locations', 'RMS_Locations']].mean(axis='columns',skipna=True)
-
-    # set index to each state in NFIP coverage dataframe
-    nfip_coverage.set_index('Unnamed: 0', inplace=True)
-    # loop through states
-    for index, row in catmodels.iterrows():
-        # get number of locations for specific state
-        locations = nfip_coverage.at[index,'SFHA_Locations']
-        # for each state calculate catastrophe model AAL per property: add mean storm surge and inland AAL then divide by number of residential (1-4 units) policies in FEMA 100-year flood zone
-        catmodels.at[index,'AAL_per_location'] = (catmodels.at[index,'StormSurge_AAL_mean'] + catmodels.at[index,'Inland_AAL_mean']) / locations
-
-    # create state column from index
-    catmodels['State'] = catmodels.index
-
-    # calculate CONUS storm surge AAL for each cat model and then take mean
-    cat_models_ss_aal = np.mean([catmodels['Katrisk_Storm Surge_AAL'].sum(), catmodels['AIR_Storm Surge_AAL'].sum(), catmodels['RMS_Storm_Surge_AAL'].sum()])
-    # calculate CONUS inland AAL for each cat model and then take mean
-    cat_models_inland_aal = np.mean([catmodels['Katrisk_Inland_AAL'].sum(), catmodels['AIR_Inland_AAL'].sum()])
-    # calculate CONUS AAL per property using the mean storm surge and inland AAL and CONUS NFIP policies for residential (1-4 units) in FEMA 100-year flood zone
-    cat_models_burn_rate_mean = (cat_models_ss_aal + cat_models_inland_aal) / nfip_coverage['SFHA_Locations'].sum()
-    # calculate KatRisk AAL per property
-    katrisk_burn_rate = (catmodels['Katrisk_Storm Surge_AAL'].sum() + catmodels['Katrisk_Inland_AAL'].sum()) / nfip_coverage['SFHA_Locations'].sum()
-    # calculate Verisk AAL per property
-    verisk_burn_rate = (catmodels['AIR_Storm Surge_AAL'].sum() + catmodels['AIR_Inland_AAL'].sum()) / nfip_coverage['SFHA_Locations'].sum()
-    # print cat model AAL per property for CONUS
-    print(f"Cat Models Average AAL per property: {cat_models_burn_rate_mean}; Katrisk AAL per property: {katrisk_burn_rate}; AIR AAL per property: {verisk_burn_rate}")
-    print(f"Cat Models Average locations: {nfip_coverage['SFHA_Locations'].sum()}; Katrisk locations: {nfip_coverage['SFHA_Locations'].sum()}; AIR locations: {nfip_coverage['SFHA_Locations'].sum()}")
-
-    # use Ginto Normal font
-    font_path = '/Users/ddusseau/Documents/Fonts/GintoNormal/GintoNormal-Regular.ttf'  # the location of the font file
-    my_font = fm.FontProperties(fname=font_path, size=9)  # get the font based on the font_path
-    # set DPI parameter
-    plt.rcParams['savefig.dpi'] = 300
-    # creating an empty chart and set size
-    fig = plt.figure(figsize=(16, 8))
-    ax = fig.add_subplot(111)
-
-    # convert state name in First Street data to all caps
-    first_street['State_Name_Upper'] = first_street['State_Name'].str.upper()
-    # set NSI index as the state name
-    nsi_data.set_index('Unnamed: 0', inplace=True)
-
-    aal_fs_cat = [] # initialize empty list to hold burn rate results
-    fs_aal_total = 0 # initialize total First Street AAL
-    fs_locations_total = 0 # initialize total First Street locations
-    # loop through states
-    for index, row in first_street.iterrows():
-        # calculate total number of First Street locations based on NSI structures residential (1-4 units) in FEMA 100-year floodzones
-        fs_locations = nsi_data.at[row['State_Name_Upper'],"Num_res_1-4units_SFHA"]
-
-        # calculate AAL per property using AAL from First Street 100-year floodplain and FEMA 100-year floodplain
-        aal_fs = row['Inside SFHA AAL'] / fs_locations
-        # add state locations to CONUS locations
-        fs_locations_total = fs_locations_total+ fs_locations
-        # add state AAL to CONUS AAL
-        fs_aal_total = fs_aal_total + row['Inside SFHA AAL']
-
-        # extract cat model mean AAL per property
-        aal_cat = catmodels.at[row['State'],'AAL_per_location']
-        # append First Street and cat model mean AAL per property to output list
-        aal_fs_cat.append([row['State'],aal_fs,aal_cat])
-
-        print(row['State'],aal_fs,aal_cat)
-        # plot AAL per property in stem plot and assign color depending on which burn rate is greater
-        if aal_fs > aal_cat:
-            ax.stem(row['State'], aal_fs-aal_cat, linefmt='#FF5700', markerfmt='#FF5700', basefmt=' ', label= 'First Street > Cat Models')
-        else:
-            ax.stem(row['State'], aal_fs-aal_cat, linefmt='#233E99', markerfmt='#233E99', basefmt=' ', label= 'First Street < Cat Models')
-
-    # convert list of burn rates into dataframe
-    aal_fs_cat_pd = pd.DataFrame(aal_fs_cat,columns=['State','FSF_per_property','CatModel_mean_per_property'])
-    # aal_fs_cat_pd.to_csv('FSF_CatModel_perProperty.csv',index=False)
-
-    plt.tick_params(left = False)
-    plt.box(False)
-    plt.grid(visible=True,axis='y')
-    plt.yticks(fontproperties=my_font, fontsize=13)
-    plt.xticks(fontproperties=my_font, fontsize=10)
-    plt.text(-2.5, 12000, s="AAL per Property Comparison: First Street Foundation vs Catastrophe Models", fontproperties=my_font, fontsize=16)
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys())
-    plt.ylabel("AAL per property First Street - Cat Models ($)" ,fontproperties=my_font, fontsize=13)
-
-    # plt.show()
-
-    plt.savefig("./figures/FSF_minus_CatModels_perProperty_Residential.png",bbox_inches='tight')
-
-    # print CONUS First Street AAL per property
-    print(f"First Street 100-year AAL per property: ${fs_aal_total / fs_locations_total}")
-    print(f"First Street AAL total: {fs_aal_total}. First Street properties total: {fs_locations_total}")
-
-    return
-
-## function to compare First Street AAL and reinsurance cat model AAL to NFIP claims data
+## function to compare reinsurance cat model AAL to NFIP claims data
 def aal_validation():
     # load in NFIP claims data
     data = pd.read_csv('FimaNfipClaims.csv', engine='c')
-
-    # list of occupancy codes for residential (1-4 units)
-    occupancy_res1_4 = [1, 2, 11, 12, 14]
 
     # get unique years from NFIP claims data and sort them
     years = np.sort(pd.unique(data['yearOfLoss']))
@@ -584,10 +471,8 @@ warnings.filterwarnings('ignore')
 
 # total_coverage()
 
-residential_coverage_cat_models()
+# residential_coverage_cat_models()
 
 burn_rate_comparison()
-
-# aal_perproperty_comparison()
 
 # aal_validation()
