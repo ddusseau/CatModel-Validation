@@ -1,12 +1,13 @@
-
+import lmoments3 as lm
+from lmoments3 import distr
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import warnings
-import cpi
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import glob2
+import scipy.stats as stats
 
 
 ## function to extract NSI data for each state and for the 100-year FEMA flood zone
@@ -334,76 +335,185 @@ def burn_rate_comparison():
 
 ## function to compare reinsurance cat model AAL to NFIP claims data
 def aal_validation():
-    # load in NFIP claims data
-    data = pd.read_csv('FimaNfipClaims.csv', engine='c')
-
-    # get unique years from NFIP claims data and sort them
-    years = np.sort(pd.unique(data['yearOfLoss']))
 
     # use Ginto Normal font
     font_path = '/Users/ddusseau/Documents/Fonts/GintoNormal/GintoNormal-Regular.ttf'  # the location of the font file
-    my_font = fm.FontProperties(fname=font_path, size=9)  # get the font based on the font_path
+    my_font = fm.FontProperties(fname=font_path, size=11)  # get the font based on the font_path
     plt.rcParams['savefig.dpi'] = 300
 
-################################
-## NFIP: Average recorded yearly damages as a proportion of the yearly total value of NFIP policies.
-## Cat Models: Average annual relative damage according to reinsurance placement data
+
+    policy_data = pd.read_csv('FEMA_policies_since2009.csv', engine='c', usecols=['reportedZipCode','year_date'])
+    policy_data['count'] = 1
+    nfip_riskcount = policy_data.groupby(['reportedZipCode', 'year_date'])['count'].sum().reset_index()
+
     nfip_policies_data = pd.read_csv('./NFIP_total_exposure_policies.csv')
-    nfip_policies_data.set_index('Year', inplace=True)
+    policies_2020 = nfip_policies_data[nfip_policies_data['Year'] == 2009]['Policies'].to_numpy()[0]
+    nfip_policies_data['trendFactor2009'] = policies_2020 / nfip_policies_data['Policies']
 
-    total_coverage = 0
-    total_paid = 0
-    moving = []
-    for y in years:
-        if y < 1978 or y > 2023: #1992
+    zipcodes = nfip_riskcount['reportedZipCode'].unique()
+    for z in zipcodes:
+        zip_data = nfip_riskcount[nfip_riskcount['reportedZipCode'] == z]
+        count2022 = zip_data[zip_data['year_date'] == 2022]['count']
+        if count2022.shape[0] == 0:
             continue
-        data_year = data[data['yearOfLoss'] == y]
-        data_year['total_paid'] = data_year['netBuildingPaymentAmount'] + data_year['netContentsPaymentAmount']
+        count2022 = count2022.to_numpy()[0]
+        zip_data['count'] = count2022/zip_data['count']
+        nfip_riskcount.loc[zip_data.index,'trendFactor2022'] = zip_data['count']
 
-        total_paid = total_paid + data_year['total_paid'].sum()
-        total_coverage = total_coverage + nfip_policies_data.at[y,'Exposure']
-        moving.append(total_paid / (total_coverage / 1000))
+    nfip_riskcount.dropna(inplace=True) # remove any zip codes where there are no 2022 policies
+
+    house_price = pd.read_csv('MSPUS.csv')
+    cpi_data = pd.read_csv('USCPI_1978-2024.csv',skiprows=2)
+
+    cpi2022 = cpi_data[cpi_data['Year'] == 2022]['U.S. Consumer Price Index *'].to_numpy()[0]
+    cpi_data['cpi2022factor'] = cpi2022 / cpi_data['U.S. Consumer Price Index *']
+
+    house_price['Year'] = pd.to_datetime(house_price['observation_date']).dt.year
+    house_price_year = house_price.groupby('Year')['MSPUS'].mean().reset_index()
+    house2022 = house_price_year[house_price_year['Year'] == 2022]['MSPUS'].to_numpy()[0]
+    house_price_year['housePrice2022factor'] = house2022 / house_price_year['MSPUS']
+
+    cpi_house = cpi_data.merge(house_price_year, on='Year')
+    cpi_house['inflation2022factor'] = cpi_house['cpi2022factor'] * cpi_house['housePrice2022factor']
+
+    total_inflation_trend = dict(zip(cpi_house['Year'],cpi_house['inflation2022factor'].astype(float)))
+    inflation_trend = dict(zip(cpi_house['Year'],cpi_house['cpi2022factor'].astype(float)))
+
+    # load in NFIP claims data
+    loss_data = pd.read_csv('FimaNfipClaims.csv', engine='c', usecols=['reportedZipCode', 'netContentsPaymentAmount', 'netBuildingPaymentAmount',
+        'yearOfLoss','occupancyType','state'])
+    remove_states = ['PR','AK','HI','VI','AS','GU','UN']
+    loss_data = loss_data[~loss_data['state'].isin(remove_states)]
+    loss_data = loss_data[loss_data['yearOfLoss'] <= 2024]
+
+    loss_data.dropna(inplace=True, subset=['reportedZipCode', 'yearOfLoss'])
+    loss_data['yearOfLoss'] = loss_data['yearOfLoss'].astype(int)
+    loss_data['reportedZipCode'] = loss_data['reportedZipCode'].astype(int)
+    loss_data = loss_data[(loss_data['reportedZipCode'] > 1000) & (loss_data['reportedZipCode'] < 99999)] # remove remaining zip codes in PR or invalid ones
+
+    loss_data = loss_data[loss_data['netBuildingPaymentAmount'] > 0]
+    loss_data = loss_data[loss_data['netContentsPaymentAmount'] > 0]
+
+    loss_data['netBuildingPaymentAmount'] = loss_data['netBuildingPaymentAmount'] * loss_data['yearOfLoss'].map(total_inflation_trend)
+    loss_data['netContentsPaymentAmount'] = loss_data['netContentsPaymentAmount'] * loss_data['yearOfLoss'].map(inflation_trend)
+
+    res1_4_codes = [1, 2, 11, 12, 14, 16, 17, np.nan]
+    res4more_codes = [3, 13, 15]
+    business_cods = [4, 6, 17, 18, 19]
+    loss_data.loc[(loss_data['netContentsPaymentAmount'] > 100000) & (loss_data['occupancyType'].isin(res1_4_codes)), 'netContentsPaymentAmount'] = 100000
+    loss_data.loc[(loss_data['netContentsPaymentAmount'] > 100000) & (loss_data['occupancyType'].isin(res4more_codes)), 'netContentsPaymentAmount'] = 100000
+    loss_data.loc[(loss_data['netContentsPaymentAmount'] > 500000) & (loss_data['occupancyType'].isin(business_cods)), 'netContentsPaymentAmount'] = 500000
+
+    loss_data.loc[(loss_data['netBuildingPaymentAmount'] > 250000) & (loss_data['occupancyType'].isin(res1_4_codes)), 'netBuildingPaymentAmount'] = 250000
+    loss_data.loc[(loss_data['netBuildingPaymentAmount'] > 500000) & (loss_data['occupancyType'].isin(res4more_codes)), 'netBuildingPaymentAmount'] = 500000
+    loss_data.loc[(loss_data['netBuildingPaymentAmount'] > 500000) & (loss_data['occupancyType'].isin(business_cods)), 'netBuildingPaymentAmount'] = 500000
+
+    loss_data['totalPayment'] = loss_data['netBuildingPaymentAmount'] + loss_data['netContentsPaymentAmount']
+
+    loss_data = loss_data.groupby(['reportedZipCode', 'yearOfLoss'])['totalPayment'].sum().reset_index()
+
+    def create_risk_trend_lookup(nfip_riskcount):
+        # Create a dictionary with (zipcode, year) as key and trendFactor2022 as value
+        lookup_table = {}
+
+        # Select only the necessary columns to speed up the operation
+        subset_df = nfip_riskcount[['reportedZipCode', 'year_date', 'trendFactor2022']]
+
+        # Convert to numpy arrays for faster iteration
+        zipcodes = subset_df['reportedZipCode'].values
+        years = subset_df['year_date'].values
+        trend_factors = subset_df['trendFactor2022'].values
+
+        # Create the lookup table
+        for i in range(len(subset_df)):
+            lookup_table[(zipcodes[i], years[i])] = trend_factors[i]
+
+        return lookup_table
+
+    # Create the lookup table
+    risk_trend_lookup = create_risk_trend_lookup(nfip_riskcount)
+
+    for index, row in loss_data.iterrows():
+        # print(index/loss_data.shape[0])
+        year = int(row['yearOfLoss'])
+        if year < 2009:
+            pre2009_trend = nfip_policies_data[nfip_policies_data['Year'] == year]['trendFactor2009'].to_numpy()[0]
+            loss_data.at[index, 'totalPayment'] = row['totalPayment'] * pre2009_trend
+            year = 2009
+
+        zipcode = row['reportedZipCode']
+        risktrend = risk_trend_lookup.get((zipcode, year), None)
+        if risktrend is None:
+            loss_data.at[index, 'totalPayment'] = 0
+            continue
+
+        loss_data.at[index, 'totalPayment'] = row['totalPayment'] * risktrend
+
+    policy_data = pd.read_csv('FEMA_policies_since2009.csv', engine='c', usecols=['reportedZipCode', 'year_date', 'propertyState', 'totalBuildingInsuranceCoverage', 'totalContentsInsuranceCoverage'])
+    policy_data['reportedZipCode'] = policy_data['reportedZipCode'].astype(int)
+    policy_data['year_date'] = policy_data['year_date'].astype(int)
+    policy_data = policy_data[~policy_data['propertyState'].isin(remove_states)]
+    policy_data = policy_data[(policy_data['reportedZipCode']  > 1000) & (policy_data['year_date'] == 2022)] # remove any from PR and get 2022
+    policy_data['totalCoverage'] = policy_data['totalBuildingInsuranceCoverage'] + policy_data['totalContentsInsuranceCoverage']
+    coverage = policy_data['totalCoverage'].sum()
+
+    loss_by_year = loss_data.groupby('yearOfLoss')['totalPayment'].sum()
+    aal = loss_by_year.mean()
+    print(aal)
+    print(coverage)
+    print(aal / (coverage/1000))
 
 
-    plt.plot(np.arange(1978,2023+1),moving)
-    plt.title("NFIP Moving Burn Rate",fontproperties=my_font, fontsize=15)
-    plt.ylabel("Burn Rate ($)" ,fontproperties=my_font, fontsize=13)
-    plt.xlabel("Years Used in Analysis" ,fontproperties=my_font, fontsize=13)
+    data = loss_by_year/1000000000
+    paras = distr.gev.lmom_fit(data)
+    fitted_gev = distr.gev(**paras)
+    x = np.linspace(min(data), max(data), 200)
+    gev_pdf = stats.genextreme.pdf(x, paras['c'], paras['loc'], paras['scale'])
+    plt.hist(data, bins=30, density=True, alpha=0.6, label='NFIP Loss Data')
+    plt.plot(x, gev_pdf, 'r-', label='Fitted GEV')
     plt.yticks(fontproperties=my_font, fontsize=12)
     plt.xticks(fontproperties=my_font, fontsize=12)
-    plt.ylim(0, 6)
-    plt.savefig("./figures/NFIP_moving_burn_rate.png",bbox_inches='tight')
-    # plt.show()
+    plt.ylabel(f"Density (1^-9)" ,fontproperties=my_font, fontsize=13)
+    plt.xlabel("Annual Loss ($ billions)" ,fontproperties=my_font, fontsize=13)
+    plt.legend(prop=my_font, framealpha=1)
+    plt.box(False)
+    plt.grid(visible=True,axis='y',color='black')
+    plt.savefig("./figures/NFIP_GEV_fit_hist.png",bbox_inches='tight')
+    plt.show()
+    print(1/(1-fitted_gev.cdf(data.max())))
+    print(stop)
 
-    print(f"Burn rate of NFIP ${total_paid / (total_coverage / 1000)}")
-    print(f"Total claims ${total_paid} and total coverage ${total_coverage}")
+    data = pd.read_csv('FimaNfipClaims.csv', engine='c', usecols=['nonPaymentReasonBuilding', 'yearOfLoss','reportedZipCode'])
+    flood_denied = [1, 15] # denied due to deductible or damage before start of policy
 
-    years_flip = []
-    total_coverage = 0
-    total_paid = 0
-    moving_burn_rate = []
-    for y in np.flip(years):
-        if y < 1978 or y > 2023:
+    loss_flooded = data[(data['nonPaymentReasonBuilding'].isna()) | (data['nonPaymentReasonBuilding'].isin(flood_denied))] # denied flooded buildings or not denied flooded buildings
+    loss_flooded['claims'] = 1
+    loss_flooded = loss_flooded.groupby(['reportedZipCode', 'yearOfLoss'])['claims'].sum().reset_index()
+
+    for index, row in loss_flooded.iterrows():
+        # print(index/loss_data.shape[0])
+        year = int(row['yearOfLoss'])
+        if year < 2009:
+            pre2009_trend = nfip_policies_data[nfip_policies_data['Year'] == year]['trendFactor2009'].to_numpy()[0]
+            loss_flooded.at[index, 'claims'] = row['claims'] * pre2009_trend
+            year = 2009
+
+        zipcode = row['reportedZipCode']
+        risktrend = risk_trend_lookup.get((zipcode, year), None)
+        if risktrend is None:
+            loss_data.at[index, 'claims'] = 0
             continue
-        data_year = data[data['yearOfLoss'] == y]
-        data_year['total_paid'] = data_year['netBuildingPaymentAmount'] + data_year['netContentsPaymentAmount']
 
-        total_paid = total_paid + data_year['total_paid'].sum()
-        total_coverage = total_coverage + nfip_policies_data.at[y,'Exposure']
-        moving_burn_rate.append(total_paid/(total_coverage / 1000))
-        years_flip.append(y)
+        loss_flooded.at[index, 'claims'] = row['claims'] * risktrend
 
-    plt.plot(years_flip,moving_burn_rate)
-    plt.title("NFIP Moving Burn Rate - Backwards in Time",fontproperties=my_font, fontsize=15)
-    plt.ylabel("Burn Rate ($)" ,fontproperties=my_font, fontsize=13)
-    plt.xlabel("Years Used in Analysis" ,fontproperties=my_font, fontsize=13)
-    plt.gca().invert_xaxis()
-    plt.yticks(fontproperties=my_font, fontsize=12)
-    plt.xticks(fontproperties=my_font, fontsize=12)
-    plt.ylim(0, 6)
-    plt.savefig("./figures/NFIP_moving_burn_rate_backwards.png",bbox_inches='tight')
-    # plt.show()
 
+    loss_flooded = loss_flooded.groupby('yearOfLoss')['claims'].sum()
+    loss_flooded = loss_flooded.mean()
+
+    nfip_policies_data = pd.read_csv('./NFIP_total_exposure_policies.csv')
+    policies_2022 = nfip_policies_data[nfip_policies_data['Year'] == 2020]['Policies'].to_numpy()[0]
+
+    print(loss_flooded / policies_2022 * 100)
 
 ################################
 ## Comparison graph of average replacement value between First Street and NSI
@@ -459,8 +569,6 @@ def aal_validation():
     return
 
 
-
-
 ########################################
 
 
@@ -473,6 +581,6 @@ warnings.filterwarnings('ignore')
 
 # residential_coverage_cat_models()
 
-burn_rate_comparison()
+# burn_rate_comparison()
 
-# aal_validation()
+aal_validation()
