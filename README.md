@@ -1,3 +1,4 @@
 # CatModel-Validation
 
-This code was used for the analysis and creation of figures in Dusseau et al. (2024) Validation of U.S. Average Annual Loss from Catastrophe Flood Models.
+This code was used for the analysis and creation of figures in Dusseau et al. (2025) Validation and Comparison of U.S. Loss Estimates from Catastrophe Flood Models.
+.
